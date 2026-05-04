@@ -265,7 +265,10 @@ void App::runNormal()
    // run the lazy mtcp_init now (post-fork, post-RDMA-fork-init) instead of
    // letting the very first SuperTcpSocket construction trigger it.
    if (cfg->getConnUseSuperTCP())
+   {
       SuperTcpSocket::superTcpRuntimeInitOnce();
+      findAllowedSuperTcpInterfaces(localNicList);
+   }
 
    // Find MgmtNode
    bool mgmtWaitRes = waitForMgmtNode();
@@ -469,6 +472,18 @@ void App::findAllowedRDMAInterfaces(NicAddressList& outList) const
       bool foundRdmaInterfaces = NetworkInterfaceCard::checkAndAddRdmaCapability(this->allowedInterfaces, outList);
       if (foundRdmaInterfaces)
          outList.sort(NetworkInterfaceCard::NicAddrComp{&allowedInterfaces}); // re-sort the niclist
+   }
+}
+
+void App::findAllowedSuperTcpInterfaces(NicAddressList& outList) const
+{
+   Config* cfg = this->getConfig();
+
+   if (cfg->getConnUseSuperTCP() && SuperTcpSocket::superTcpRuntimeAvailable())
+   {
+      bool found = NetworkInterfaceCard::checkAndAddSuperTcpCapability(this->allowedInterfaces, outList);
+      if (found)
+         outList.sort(NetworkInterfaceCard::NicAddrComp{&allowedInterfaces});
    }
 }
 

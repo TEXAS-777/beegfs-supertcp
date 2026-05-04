@@ -184,6 +184,7 @@ class NetworkInterfaceCard
          NicListCapabilities* outCapabilities);
 
       static bool checkAndAddRdmaCapability(const StringList& allowedInterfacesList, NicAddressList& nicList);
+      static bool checkAndAddSuperTcpCapability(const StringList& allowedInterfacesList, NicAddressList& nicList);
 
       struct NicAddrComp {
          const StringList* preferences = nullptr;

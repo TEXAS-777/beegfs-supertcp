@@ -5,6 +5,7 @@
 #include <common/app/log/LogContext.h>
 #include <common/system/System.h>
 #include "RDMASocket.h"
+#include "SuperTcpSocket.h"
 #include <memory>
 #include <string_view>
 #include <sys/ioctl.h>
@@ -249,6 +250,54 @@ void NetworkInterfaceCard::filterInterfacesForRDMA(const StringList& allowedInte
  *
  * @return true, if at least one RDMA-capable interface was found
  */
+/**
+ * Probe each TCP NIC by attempting to bind a SuperTcpSocket; if mTCP is
+ * configured to handle that IP, the bind succeeds and we add a SuperTCP
+ * NicAddress entry.
+ *
+ * Mirrors checkAndAddRdmaCapability — same trial-bind pattern. SuperTCP
+ * here means "DPDK-bound NIC with mTCP user-space TCP" — it shadows the
+ * netdev IP rather than running alongside it (kernel TCP path is
+ * unavailable for that IP once the NIC is DPDK-bound).
+ */
+bool NetworkInterfaceCard::checkAndAddSuperTcpCapability(const StringList& allowedInterfacesList, NicAddressList& nicList)
+{
+   NicAddressList superTcpInterfaces;
+
+   if (SuperTcpSocket::isSuperTcpAvailable() && SuperTcpSocket::superTcpRuntimeAvailable())
+   {
+      for (NicAddressListIter iter = nicList.begin(); iter != nicList.end(); iter++)
+      {
+         try
+         {
+            if (iter->nicType == NICADDRTYPE_STANDARD)
+            {
+               auto stSock = SuperTcpSocket::create();
+               stSock->bindToAddr(iter->ipAddr.toSocketAddress(0));
+
+               NicAddress nicAddr = *iter;
+               nicAddr.nicType = NICADDRTYPE_SUPERTCP;
+
+               if (!allowedInterfacesList.empty()
+                   && findNicPosition(allowedInterfacesList, nicAddr) == -1)
+                  continue;
+
+               superTcpInterfaces.push_back(nicAddr);
+            }
+         }
+         catch (SocketException& e)
+         {
+            // not handled by mTCP/DPDK on this machine — skip silently
+         }
+      }
+   }
+
+   const bool found = !superTcpInterfaces.empty();
+   nicList.splice(nicList.end(), superTcpInterfaces);
+   return found;
+}
+
+
 bool NetworkInterfaceCard::checkAndAddRdmaCapability(const StringList& allowedInterfacesList, NicAddressList& nicList)
 {
    // Note: This works by binding an RDMASocket to each IP of the passed list.

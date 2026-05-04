@@ -360,10 +360,35 @@ void SuperTcpSocketImpl::shutdown()
 
 void SuperTcpSocketImpl::shutdownAndRecvDisconnect(int timeoutMS)
 {
-   // mTCP API does not expose half-close + drain semantics. Best-effort:
-   // drain any pending bytes within timeoutMS, then close. A proper
-   // implementation needs MTCP_EPOLLRDHUP gating — Phase 3.
-   (void)timeoutMS;
+   // mTCP exposes no half-close (no SHUT_WR). Best-effort: drain whatever
+   // the peer sends until either the peer closes (RDHUP / read returns 0)
+   // or timeoutMS elapses, then close. Used by callers that want to send
+   // a "goodbye" message and let the peer ack-close cleanly before we
+   // tear down the connection.
+   if (mtcpSock < 0)
+      return;
+
+   int ep = ensureRecvEpoll();
+   if (ep >= 0)
+   {
+      char buf[4096];
+      const int deadlineMs = timeoutMS > 0 ? timeoutMS : 0;
+
+      // Single epoll_wait then drain — a tighter loop with deadline
+      // tracking is overkill for a "goodbye" path.
+      struct mtcp_epoll_event ev[1];
+      int n = mtcp_epoll_wait(ep, ev, 1, deadlineMs);
+      if (n > 0)
+      {
+         while (true)
+         {
+            ssize_t r = mtcp_read(mtcpSock, buf, sizeof(buf));
+            if (r <= 0) // peer closed (0) or would-block (-1 EAGAIN)
+               break;
+         }
+      }
+   }
+
    shutdown();
 }
 

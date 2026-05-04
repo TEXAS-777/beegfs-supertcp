@@ -520,6 +520,7 @@ class App : public AbstractApp
 
       void findAllowedInterfaces(NicAddressList& outList) const;
       void findAllowedRDMAInterfaces(NicAddressList& outList) const;
+      void findAllowedSuperTcpInterfaces(NicAddressList& outList) const;
 };
 
 

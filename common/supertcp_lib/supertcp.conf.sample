@@ -1,0 +1,57 @@
+# Sample mTCP / SuperTCP runtime config for BeeGFS daemons.
+#
+# Path:        /etc/beegfs/supertcp.conf  (or set BEEGFS_SUPERTCP_CONFIG)
+# Owner:       beegfs daemon user; readable at startup
+# Format:      mTCP key = value  (see SuperTCP repo apps/example/test.conf)
+#
+# This file is loaded ONCE per daemon process by mtcp_init() — invoked
+# either explicitly from {meta,storage,mon}/App::run() (when
+# `connUseSuperTCP = true` in the daemon's *.conf) or lazily on first
+# SuperTcpSocket construction.
+#
+# DPDK pre-requisites must be set up out-of-band: hugepages reserved,
+# NIC bound to a DPDK driver (vfio-pci or igb_uio), DPDK installed
+# system-wide so pkg-config --libs libdpdk works at fork build time.
+
+# Use DPDK as the I/O backend (vs. PSIO / netmap for older mTCP variants).
+io = dpdk
+
+# Number of cores mTCP threads will pin to. Must be ≤ available DPDK
+# lcores. The plugin's per-thread mctx round-robins BeeGFS threads
+# across [0, num_cores).
+num_cores = 4
+
+# DPDK NIC bindings. The interface name here must match a kernel netdev
+# name AT THE TIME mTCP IS INITIALIZED — DPDK binds the device after
+# init. For the BeeGFS daemons this should be the same NIC the cluster
+# fabric runs on (in the rapids1↔stream4 setup that is eth0 on rapids1
+# and ens2v0 on stream4 — see docs/BeeGFS.md §3).
+port = eth0
+
+# Per-flow rcv/snd buffer sizes (bytes). Defaults err on the small side
+# for high-bandwidth fabrics; bump for parallel BeeGFS workloads.
+rcvbuf = 2000000
+sndbuf = 2000000
+
+# Total send-buffer pool size (count of buffers shared across all
+# in-flight connections). Set to ~10× expected concurrent connections
+# to avoid the partial-send issue noted in CLAUDE.md.
+max_num_buffers = 1000
+
+# TCP teardown timers (0 = mTCP defaults).
+tcp_timeout  = 0
+tcp_timewait = 0
+
+# Optional per-port stats line in the daemon log on shutdown.
+stat_print = eth0
+
+# Congestion control profile. Default (commented out) is newreno; swift
+# is the alternative shipped with this SuperTCP fork.
+# cc = swift
+# cc_target_delay = 40
+# cc_endpoint_target = 30
+
+# Hardware NIC RX timestamping costs ~6% single-core throughput for
+# little benefit on BeeGFS workloads. Leave off unless running a
+# delay-sensitive CC profile.
+nic_rx_timestamp = 0
