@@ -13,6 +13,17 @@ $(call build-shared-library,\
    rdma,\
    ../source ../ib_lib)
 
+# SuperTCP transport plugin: opt-in via BEEGFS_USE_SUPERTCP=1.
+# During scaffolding the plugin has no external deps; once SuperTcpSocketImpl
+# wires in mtcp / DPDK calls, add them to the deps list.
+ifeq ($(BEEGFS_USE_SUPERTCP),1)
+$(call build-shared-library,\
+   beegfs_supertcp,\
+   $(shell find ../supertcp_lib -iname '*.cpp'),\
+   ,\
+   ../source ../supertcp_lib)
+endif
+
 
 $(call build-test,\
    test-runner,\

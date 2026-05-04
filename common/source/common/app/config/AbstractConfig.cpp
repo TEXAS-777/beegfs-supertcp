@@ -80,6 +80,7 @@ void AbstractConfig::loadDefaults(bool addDashes)
    configMapRedefine("connMgmtdPort",              "-1", addDashes); // 8008
 
    configMapRedefine("connUseRDMA",                "true", addDashes);
+   configMapRedefine("connUseSuperTCP",            "false", addDashes);
    configMapRedefine("connBacklogTCP",             "64", addDashes);
    configMapRedefine("connMaxInternodeNum",        "6", addDashes);
    configMapRedefine("connFallbackExpirationSecs", "900", addDashes);
@@ -173,6 +174,8 @@ void AbstractConfig::applyConfigMap(bool enableException, bool addDashes)
          assignKeyIfNotZero(iter, connMgmtdPortTCP, enableException);
       else if (testConfigMapKeyMatch(iter, "connUseRDMA", addDashes))
          connUseRDMA = StringTk::strToBool(iter->second);
+      else if (testConfigMapKeyMatch(iter, "connUseSuperTCP", addDashes))
+         connUseSuperTCP = StringTk::strToBool(iter->second);
       else if (testConfigMapKeyMatch(iter, "connBacklogTCP", addDashes))
          connBacklogTCP = StringTk::strToUInt(iter->second);
       else if (testConfigMapKeyMatch(iter, "connMaxInternodeNum", addDashes))

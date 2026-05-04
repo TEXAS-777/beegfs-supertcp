@@ -27,6 +27,7 @@ class ICommonConfig
       int         connMonPort;
       int         connMgmtdPort;
       bool        connUseRDMA;
+      bool        connUseSuperTCP;
       unsigned    connBacklogTCP;
       unsigned    connMaxInternodeNum;
       unsigned    connFallbackExpirationSecs;
@@ -122,6 +123,11 @@ class ICommonConfig
       bool getConnUseRDMA() const
       {
          return connUseRDMA;
+      }
+
+      bool getConnUseSuperTCP() const
+      {
+         return connUseSuperTCP;
       }
 
       unsigned getConnBacklogTCP() const

@@ -98,6 +98,8 @@ add_library(
 	./source/common/net/sock/RoutingTable.h
 	./source/common/net/sock/RoutingTable.cpp
 	./source/common/net/sock/RDMASocket.cpp
+	./source/common/net/sock/SuperTcpSocket.h
+	./source/common/net/sock/SuperTcpSocket.cpp
 	./source/common/net/sock/StandardSocket.h
 	./source/common/net/sock/SocketException.h
 	./source/common/net/sock/Socket.h
@@ -602,3 +604,27 @@ install(
 	DESTINATION "usr/lib"
 	COMPONENT "libbeegfs-ib"
 )
+
+# --- SuperTCP transport plugin (optional) ---
+# Build libbeegfs_supertcp.so only when explicitly enabled. The plugin links
+# against mTCP / DPDK; until those paths are wired up, the scaffolding stubs
+# build cleanly with -DBEEGFS_USE_SUPERTCP=ON without any external deps.
+if(BEEGFS_USE_SUPERTCP)
+	add_library(
+		beegfs_supertcp SHARED
+		./supertcp_lib/SuperTcpSocketImpl.h
+		./supertcp_lib/SuperTcpSocketImpl.cpp
+	)
+
+	target_include_directories(beegfs_supertcp PRIVATE ./supertcp_lib)
+
+	# TODO: link against SuperTCP / DPDK once those calls are wired into
+	# SuperTcpSocketImpl.cpp. For now the plugin has no extra deps.
+	# Expected: target_link_libraries(beegfs_supertcp mtcp dpdk ...)
+
+	install(
+		TARGETS beegfs_supertcp
+		DESTINATION "usr/lib"
+		COMPONENT "libbeegfs-supertcp"
+	)
+endif()

@@ -11,7 +11,8 @@
 enum NicAddrType {
    NICADDRTYPE_STANDARD = 0,
    // removed: NICADDRTYPE_SDP = 1,
-   NICADDRTYPE_RDMA = 2
+   NICADDRTYPE_RDMA = 2,
+   NICADDRTYPE_SUPERTCP = 3
 };
 
 int findNicPosition(const StringList& preferences, const NicAddress& nic);

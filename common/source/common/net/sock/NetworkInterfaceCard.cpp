@@ -50,6 +50,8 @@ int findNicPosition(const StringList& preferences, const NicAddress& nic) {
                return true;
             else if (nic.nicType == NICADDRTYPE_STANDARD && value == "tcp")
                return true;
+            else if (nic.nicType == NICADDRTYPE_SUPERTCP && value == "supertcp")
+               return true;
             else
                return false;
          default:
@@ -324,6 +326,7 @@ const char* NetworkInterfaceCard::nicTypeToString(NicAddrType nicType)
    {
       case NICADDRTYPE_RDMA: return "RDMA";
       case NICADDRTYPE_STANDARD: return "TCP";
+      case NICADDRTYPE_SUPERTCP: return "SuperTCP";
 
       default: return "<unknown>";
    }

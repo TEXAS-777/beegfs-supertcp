@@ -65,6 +65,7 @@ set(BEEGFS_SKIP_TESTS OFF CACHE BOOL "Skip building and running tests.")
 set(BEEGFS_SKIP_CLIENT OFF CACHE BOOL "Skip building the kernel module.")
 set(BEEGFS_KERNELDIR "" CACHE PATH "Path to kernel for kernel module (optional).")
 set(BEEGFS_OFEDDIR "" CACHE PATH "Path to OFED for kernel module (optional).")
+set(BEEGFS_USE_SUPERTCP OFF CACHE BOOL "Build the SuperTCP transport plugin (libbeegfs_supertcp.so).")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ggdb3")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ggdb3")
