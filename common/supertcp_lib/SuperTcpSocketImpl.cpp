@@ -13,6 +13,8 @@
 
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <pthread.h>
+#include <sched.h>
 #include <sys/socket.h>
 
 #include <mtcp_api.h>
@@ -65,6 +67,21 @@ void ensureThreadContext()
       throw SocketException("SuperTcpSocket: mtcp_init failed earlier; runtime unavailable");
 
    t_coreId = g_coreCursor.fetch_add(1, std::memory_order_relaxed) % g_numCores;
+
+   // mtcp_init binds the calling (main) thread to its master lcore via
+   // rte_eal_init; threads spawned afterwards inherit that mask. Reset to
+   // ALL configured mtcp cores before mtcp_core_affinitize so the listener
+   // thread can actually pick a different core than the master.
+   {
+      cpu_set_t allCores;
+      CPU_ZERO(&allCores);
+      for (int c = 0; c < g_numCores; c++)
+         CPU_SET(c, &allCores);
+      // pthread_setaffinity_np is a no-op for cores already in the mask;
+      // expanding requires the calling user to have permission (no cgroup
+      // restriction), which is the normal case for daemons run via systemd.
+      pthread_setaffinity_np(pthread_self(), sizeof(allCores), &allCores);
+   }
 
    if (mtcp_core_affinitize(t_coreId) != 0)
       throw SocketException("SuperTcpSocket: mtcp_core_affinitize failed for core "
