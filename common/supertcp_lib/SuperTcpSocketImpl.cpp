@@ -213,21 +213,23 @@ void* listener_start_cb(void* app_opaque, uint16_t port)
    h->args.app  = app;
    h->args.port = port;
 
-   // Register the listener as an mtcp lthread on lcore 0. mtcp populates
-   // g_mctx[0] for it; mtcp_create_context inside the lthread returns it.
-   if (mtcp_thread_create(
-         (void*)&SuperTcpListenerThread::lthreadEntry,
-         (void*)&h->args,
-         0) < 0)
-   {
-      delete h;
-      return nullptr;
-   }
-
-   // Spawn a pthread to drive mtcp_run_app. mtcp_run_app blocks until all
-   // registered lthreads exit; we set Args::shouldStop on shutdown to make
-   // the listener lthread return, which causes mtcp_run_app to return.
-   h->runner = std::thread([]() { mtcp_run_app(); });
+   // Run mtcp_thread_create + mtcp_run_app on the SAME pthread. The
+   // lthread scheduler's internal state (g_thread / g_app_thread arrays,
+   // master_cpu CAS) is set up in mtcp_thread_create; mtcp_run_app
+   // (= lthread_run) consumes that state and must do so from the thread
+   // that initialized it. Splitting the two across threads triggers a
+   // SIGSEGV when lthread_run dereferences uninitialised TLS.
+   h->runner = std::thread([h]() {
+      if (mtcp_thread_create(
+            (void*)&SuperTcpListenerThread::lthreadEntry,
+            (void*)&h->args,
+            0) < 0)
+      {
+         fprintf(stderr, "mtcp_thread_create failed in listener runner\n");
+         return;
+      }
+      mtcp_run_app();  // blocks until the lthread exits
+   });
 
    return h;
 }
