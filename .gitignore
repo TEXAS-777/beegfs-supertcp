@@ -1,0 +1,29 @@
+# Make-based build intermediaries (any source dir).
+*.o
+*.d
+
+# Build outputs from the per-component build/ dirs.
+common/build/libbeegfs-common.a
+common/build/libbeegfs_ib.so
+common/build/libbeegfs_supertcp.so
+common/build/test-runner
+
+meta/build/beegfs-meta
+storage/build/beegfs-storage
+mon/build/beegfs-mon
+fsck/build/beegfs-fsck
+event_listener/build/beegfs-event-listener
+utils/build/beegfs-ctl
+utils/build/beegfs-fsck
+utils/build/beegfs-net
+
+# Per-daemon test runners + intermediate static archives.
+*/build/test-runner
+*/build/lib*.a
+
+# CMake out-of-tree build dirs (we use them for IDE / quick syntax checks).
+build-test/
+
+# thirdparty/build is the make destination for thirdparty (boost, gtest, nu).
+# Source under thirdparty/source/ stays tracked.
+thirdparty/build/
