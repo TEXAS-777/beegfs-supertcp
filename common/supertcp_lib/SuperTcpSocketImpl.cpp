@@ -85,7 +85,9 @@ void ensureThreadContext()
 
    if (mtcp_core_affinitize(t_coreId) != 0)
       throw SocketException("SuperTcpSocket: mtcp_core_affinitize failed for core "
-                            + std::to_string(t_coreId));
+                            + std::to_string(t_coreId)
+                            + ": errno=" + std::to_string(errno)
+                            + " (" + std::strerror(errno) + ")");
 
    if (mtcp_create_context(t_coreId) == nullptr)
       throw SocketException("SuperTcpSocket: mtcp_create_context failed for core "
