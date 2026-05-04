@@ -1,4 +1,5 @@
 #include "SuperTcpSocketImpl.h"
+#include "SuperTcpListenerThread.h"
 #include <common/net/sock/SocketException.h>
 #include <common/net/sock/SocketConnectException.h>
 #include <common/net/sock/SocketTimeoutException.h>
@@ -162,12 +163,32 @@ SuperTcpSocket* new_supertcp_socket()
    return new SuperTcpSocketImpl();
 }
 
+void* listener_start_cb(void* app_opaque, uint16_t port)
+{
+   AbstractApp* app = static_cast<AbstractApp*>(app_opaque);
+   auto* t = new SuperTcpListenerThread(app, port);
+   t->start();
+   return t;
+}
+
+void listener_stop_and_join_cb(void* handle)
+{
+   if (!handle)
+      return;
+   auto* t = static_cast<SuperTcpListenerThread*>(handle);
+   t->selfTerminate();
+   t->join();
+   delete t;
+}
+
 } // namespace
 
 extern "C" SuperTcpSocket::ImplCallbacks beegfs_supertcp_socket_impl = {
    supertcp_runtime_available_cb,
    supertcp_runtime_init_once_cb,
    new_supertcp_socket,
+   listener_start_cb,
+   listener_stop_and_join_cb,
 };
 
 

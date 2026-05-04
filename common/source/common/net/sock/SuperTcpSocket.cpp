@@ -54,3 +54,17 @@ std::unique_ptr<SuperTcpSocket> SuperTcpSocket::create()
 
    return std::unique_ptr<SuperTcpSocket>(socket_impl->supertcp_socket_create());
 }
+
+void* SuperTcpSocket::startListener(void* app, uint16_t port)
+{
+   if (!socket_impl || !socket_impl->supertcp_listener_start)
+      return nullptr;
+   return socket_impl->supertcp_listener_start(app, port);
+}
+
+void SuperTcpSocket::stopAndJoinListener(void* handle)
+{
+   if (!socket_impl || !socket_impl->supertcp_listener_stop_and_join || !handle)
+      return;
+   socket_impl->supertcp_listener_stop_and_join(handle);
+}

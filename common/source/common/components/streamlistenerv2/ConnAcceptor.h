@@ -31,6 +31,11 @@ class ConnAcceptor : public PThread
       StandardSocket*   tcpListenSock;
       RDMASocket*       rdmaListenSock;
 
+      // Phase 4: opaque handle to the plugin-side SuperTcpListenerThread when
+      // connUseSuperTCP is enabled. nullptr otherwise. Lifecycle managed via
+      // SuperTcpSocket::startListener / stopAndJoinListener.
+      void*             superTcpListenerHandle = nullptr;
+
       int               epollFD;
 
       NicListCapabilities  localNicCaps;

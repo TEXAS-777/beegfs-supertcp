@@ -1,6 +1,8 @@
 #include <common/app/AbstractApp.h>
+#include <common/app/config/ICommonConfig.h>
 #include <common/components/worker/IncomingDataWork.h>
 #include <common/components/streamlistenerv2/StreamListenerV2.h>
+#include <common/net/sock/SuperTcpSocket.h>
 #include <common/toolkit/StringTk.h>
 #include "ConnAcceptor.h"
 #include "common/net/sock/IPAddress.h"
@@ -39,6 +41,12 @@ ConnAcceptor::~ConnAcceptor()
 {
    if(epollFD != -1)
       close(epollFD);
+
+   if (superTcpListenerHandle)
+   {
+      SuperTcpSocket::stopAndJoinListener(superTcpListenerHandle);
+      superTcpListenerHandle = nullptr;
+   }
 
    SAFE_DELETE(tcpListenSock);
    SAFE_DELETE(rdmaListenSock);
@@ -86,10 +94,28 @@ bool ConnAcceptor::initSocks()
 
    rdmaListenSock = NULL;
    tcpListenSock = NULL;
+   superTcpListenerHandle = nullptr;
 
    // RDMA
    if (!startRDMASocket(&localNicCaps))
       return false;
+
+   // SuperTCP user-space TCP — substitutes for kernel-TCP listener when
+   // enabled. mTCP claims the NIC via DPDK so we cannot run a kernel TCP
+   // listener on the same port simultaneously; the two are mutually
+   // exclusive at the listening side.
+   if (cfg->getConnUseSuperTCP() && SuperTcpSocket::superTcpRuntimeAvailable())
+   {
+      superTcpListenerHandle = SuperTcpSocket::startListener(
+         PThread::getCurrentThreadApp(), listenPort);
+      if (superTcpListenerHandle)
+      {
+         log.log(Log_NOTICE, std::string("Listening for SuperTCP connections: Port ")
+                             + StringTk::intToStr(listenPort));
+         return true;  // skip the kernel-TCP listener
+      }
+      log.logErr("SuperTCP listener start failed; falling back to kernel TCP");
+   }
 
    // TCP
    try
