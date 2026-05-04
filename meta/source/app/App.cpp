@@ -267,7 +267,9 @@ void App::runNormal()
    if (cfg->getConnUseSuperTCP())
    {
       SuperTcpSocket::superTcpRuntimeInitOnce();
-      findAllowedSuperTcpInterfaces(localNicList);
+      // Phase 4 NOTE: skipping findAllowedSuperTcpInterfaces — see
+      // detailed comment in storage/source/app/App.cpp.
+      // findAllowedSuperTcpInterfaces(localNicList);
    }
 
    // Find MgmtNode

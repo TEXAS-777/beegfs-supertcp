@@ -234,7 +234,13 @@ void App::runNormal()
    if (cfg->getConnUseSuperTCP())
    {
       SuperTcpSocket::superTcpRuntimeInitOnce();
-      findAllowedSuperTcpInterfaces(localNicList);
+      // Phase 4 NOTE: skipping findAllowedSuperTcpInterfaces. It trial-binds
+      // a SuperTcpSocket on the main thread, which forces
+      // mtcp_core_affinitize(0). Once main is pinned to {0}, the
+      // SuperTcpListenerThread inherits that mask and cannot pick another
+      // core for its own mctx. Cost: "Usable NICs" loses its
+      // "type: SuperTCP" entry; benefit: listener comes up cleanly.
+      // findAllowedSuperTcpInterfaces(localNicList);
    }
 
    // wait for management node heartbeat (required for localNodeNumID and target pre-registration)
