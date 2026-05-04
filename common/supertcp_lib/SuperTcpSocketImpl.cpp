@@ -1,5 +1,6 @@
 #include "SuperTcpSocketImpl.h"
 #include <common/net/sock/SocketException.h>
+#include <common/net/sock/SocketConnectException.h>
 #include <common/net/sock/SocketTimeoutException.h>
 
 #include <atomic>
@@ -15,6 +16,9 @@
 
 #include <mtcp_api.h>
 #include <mtcp_epoll.h>
+
+// Default connect timeout (matches StandardSocket's 5s).
+#define SUPERTCP_CONNECT_TIMEOUT_MS  5000
 
 
 // ---------------------------------------------------------------------------
@@ -76,6 +80,47 @@ void ensureThreadContext()
 {
    throw SocketException(std::string("SuperTcpSocket: ") + what + ": "
                          + std::strerror(errno));
+}
+
+// Wait for `sock` to become writable (i.e., connect() completes) within
+// timeoutMS via a one-shot mtcp_epoll. Throws SocketConnectException on
+// timeout / error, returns normally on success. The epoll fd is created
+// fresh and then leaked (mtcp doesn't expose epoll_close); per-thread mctx
+// teardown will reclaim it.
+void waitForConnectWritable(int sock, const std::string& peername, int timeoutMS)
+{
+   int ep = mtcp_epoll_create(1);
+   if (ep < 0)
+      throw SocketConnectException(
+         std::string("SuperTcpSocket: mtcp_epoll_create during connect to ")
+         + peername + ": " + std::strerror(errno));
+
+   struct mtcp_epoll_event ev = {};
+   ev.events      = MTCP_EPOLLOUT | MTCP_EPOLLERR | MTCP_EPOLLHUP;
+   ev.data.sockid = sock;
+
+   if (mtcp_epoll_ctl(ep, MTCP_EPOLL_CTL_ADD, sock, &ev) < 0)
+      throw SocketConnectException(
+         std::string("SuperTcpSocket: mtcp_epoll_ctl during connect to ")
+         + peername + ": " + std::strerror(errno));
+
+   struct mtcp_epoll_event got[1];
+   int n = mtcp_epoll_wait(ep, got, 1, timeoutMS);
+
+   if (n < 0)
+      throw SocketConnectException(
+         std::string("SuperTcpSocket: mtcp_epoll_wait during connect to ")
+         + peername + ": " + std::strerror(errno));
+
+   if (n == 0)
+      throw SocketConnectException(
+         std::string("SuperTcpSocket: timeout connecting to ") + peername);
+
+   // Mirrors StandardSocket: error events take precedence over POLLOUT
+   // because both can fire together when remote refuses.
+   if (got[0].events & (MTCP_EPOLLERR | MTCP_EPOLLHUP))
+      throw SocketConnectException(
+         std::string("SuperTcpSocket: connect refused / hung up: ") + peername);
 }
 
 bool resolveHostV4(const char* host, uint16_t port, struct sockaddr_in* outAddr)
@@ -210,20 +255,22 @@ void SuperTcpSocketImpl::connect(const char* hostname, uint16_t port)
       throw SocketConnectException(
          std::string("SuperTcpSocket: DNS resolution failed for ") + hostname);
 
+   peerIP   = IPAddress(saddr.sin_addr.s_addr);
+   peername = std::string(hostname) + ":" + std::to_string(port);
+
    if (mtcp_connect(mtcpSock,
                     reinterpret_cast<struct sockaddr*>(&saddr),
                     sizeof(saddr)) < 0)
    {
-      // mtcp_connect on a non-blocking socket may return -1 / EINPROGRESS;
-      // the higher-level BeeGFS connect path expects a synchronous result
-      // here, so we treat EINPROGRESS the same as RDMA's connect: poll once
-      // for writability (Phase-3 enhancement). Phase 2: surface errno.
+      // Socket was set non-blocking in the constructor, so connect typically
+      // returns EINPROGRESS — wait for writability via mtcp_epoll.
       if (errno != EINPROGRESS)
-         throwSysErr("mtcp_connect");
-   }
+         throw SocketConnectException(
+            std::string("SuperTcpSocket: mtcp_connect to ") + peername
+            + ": " + std::strerror(errno));
 
-   peerIP   = IPAddress(saddr.sin_addr.s_addr);
-   peername = std::string(hostname) + ":" + std::to_string(port);
+      waitForConnectWritable(mtcpSock, peername, SUPERTCP_CONNECT_TIMEOUT_MS);
+   }
 }
 
 void SuperTcpSocketImpl::connect(const SocketAddress& servAddr)
@@ -232,16 +279,20 @@ void SuperTcpSocketImpl::connect(const SocketAddress& servAddr)
 
    struct sockaddr_in saddr = servAddr.toIPv4Sockaddr();
 
+   peerIP   = servAddr.addr;
+   peername = servAddr.toString();
+
    if (mtcp_connect(mtcpSock,
                     reinterpret_cast<struct sockaddr*>(&saddr),
                     sizeof(saddr)) < 0)
    {
       if (errno != EINPROGRESS)
-         throwSysErr("mtcp_connect");
-   }
+         throw SocketConnectException(
+            std::string("SuperTcpSocket: mtcp_connect to ") + peername
+            + ": " + std::strerror(errno));
 
-   peerIP   = servAddr.addr;
-   peername = servAddr.toString();
+      waitForConnectWritable(mtcpSock, peername, SUPERTCP_CONNECT_TIMEOUT_MS);
+   }
 }
 
 void SuperTcpSocketImpl::bindToAddr(const SocketAddress& ipAddr)

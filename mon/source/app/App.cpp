@@ -1,6 +1,7 @@
 #include "App.h"
 
 #include <app/SignalHandler.h>
+#include <common/net/sock/SuperTcpSocket.h>
 #include <common/components/ComponentInitException.h>
 #include <common/components/worker/DummyWork.h>
 #include <misc/Cassandra.h>
@@ -70,6 +71,9 @@ void App::runNormal()
    Socket::checkAndCacheIPv6Availability(cfg->getConnMonPort(), cfg->getConnDisableIPv6());
 
    RDMASocket::rdmaForkInitOnce();
+
+   if (cfg->getConnUseSuperTCP())
+      SuperTcpSocket::superTcpRuntimeInitOnce();
 
 
    if (cfg->getRunDaemonized())

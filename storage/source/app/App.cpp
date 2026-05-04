@@ -8,6 +8,7 @@
 #include <common/net/message/nodes/RegisterTargetMsg.h>
 #include <common/net/message/nodes/RegisterTargetRespMsg.h>
 #include <common/net/sock/RDMASocket.h>
+#include <common/net/sock/SuperTcpSocket.h>
 #include <common/nodes/LocalNode.h>
 #include <common/nodes/TargetStateInfo.h>
 #include <common/storage/striping/Raid0Pattern.h>
@@ -226,6 +227,12 @@ void App::runNormal()
    // are compared, but the pointer is checked for equality). Thus, the first open needs to happen
    // after the fork, because we need to access the device in the child process.
    findAllowedRDMAInterfaces(localNicList);
+
+   // SuperTCP plugin uses DPDK; same fork-after-init constraint as RDMA, so
+   // run the lazy mtcp_init now (post-fork, post-RDMA-fork-init) instead of
+   // letting the very first SuperTcpSocket construction trigger it.
+   if (cfg->getConnUseSuperTCP())
+      SuperTcpSocket::superTcpRuntimeInitOnce();
 
    // wait for management node heartbeat (required for localNodeNumID and target pre-registration)
    bool mgmtWaitRes = waitForMgmtNode();
