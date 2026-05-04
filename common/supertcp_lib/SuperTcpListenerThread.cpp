@@ -11,20 +11,22 @@
 
 #include <arpa/inet.h>
 
+// We are an mtcp lthread, so unlock the UCTX-only API surface from mtcp_api.h.
+#ifndef ENABLE_UCTX
+#define ENABLE_UCTX
+#endif
 #include <mtcp_api.h>
 #include <mtcp_epoll.h>
 
 
-#define BEEGFS_SUPERTCP_BUF_SIZE     (4 * 1024 * 1024)
-#define BEEGFS_SUPERTCP_EPOLL_HINT   (256)
-#define BEEGFS_SUPERTCP_EPOLL_TIMEOUT_MS  (1000)
+#define BEEGFS_SUPERTCP_BUF_SIZE         (4 * 1024 * 1024)
+#define BEEGFS_SUPERTCP_EPOLL_HINT       (256)
+#define BEEGFS_SUPERTCP_EPOLL_TIMEOUT_MS (1000)
 
 
-SuperTcpListenerThread::SuperTcpListenerThread(AbstractApp* app_, unsigned short port)
-   : PThread("SuperTcpAccept"),
-     app(app_),
-     log("SuperTcpAccept"),
-     listenPort(port)
+SuperTcpListenerThread::SuperTcpListenerThread(Args* args_)
+   : args(args_),
+     log("SuperTcpAccept")
 {
 }
 
@@ -35,34 +37,46 @@ SuperTcpListenerThread::~SuperTcpListenerThread()
       delete listenSock;
 }
 
-void SuperTcpListenerThread::run()
+// Defined in SuperTcpSocketImpl.cpp — flips a thread_local flag so
+// ensureThreadContext() takes the lthread path (no core_affinitize, just
+// mtcp_create_context lookup of g_mctx).
+extern "C" void supertcp_mark_lthread();
+
+void SuperTcpListenerThread::lthreadEntry(void* argsOpaque)
 {
+   Args* args = static_cast<Args*>(argsOpaque);
+
+   // Tell ensureThreadContext we're in lthread context for this thread.
+   supertcp_mark_lthread();
+
+   // Sanity-pin this lthread's mctx (also populates g_mctx slot for any
+   // sub-component that calls mtcp_create_context lazily).
+   if (mtcp_create_context(0) == nullptr)
+   {
+      fprintf(stderr, "SuperTcpListener: mtcp_create_context(0) returned NULL\n");
+      return;
+   }
+
+   SuperTcpListenerThread t(args);
    try
    {
-      initThreadContext();
-
-      if (!setupListener())
+      if (!t.setupListener())
          return;
+      args->listening = true;
 
-      while (!getSelfTerminate())
-         runOnce();
+      while (!args->shouldStop)
+         t.runOnce();
 
-      log.log(Log_DEBUG, "SuperTCP listener stopping.");
+      t.log.log(Log_DEBUG, "SuperTCP listener stopping (shouldStop set).");
    }
    catch (std::exception& e)
    {
-      log.logErr(std::string("SuperTcpListenerThread fatal: ") + e.what());
-      app->handleComponentException(e);
+      t.log.logErr(std::string("SuperTcpListener fatal: ") + e.what());
+      if (args->app)
+         args->app->handleComponentException(e);
    }
-}
 
-void SuperTcpListenerThread::initThreadContext()
-{
-   // First-touch construction of a SuperTcpSocket from this thread will
-   // trigger ensureThreadContext() inside the plugin (mtcp_core_affinitize +
-   // mtcp_create_context with a round-robin core). We rely on that path here
-   // rather than calling mtcp_* directly, because the plugin owns the
-   // affinitization policy.
+   args->listening = false;
 }
 
 bool SuperTcpListenerThread::setupListener()
@@ -70,11 +84,10 @@ bool SuperTcpListenerThread::setupListener()
    try
    {
       auto sock = SuperTcpSocket::create();
-      // 0.0.0.0:listenPort
-      SocketAddress sa(IPAddress(static_cast<in_addr_t>(htonl(INADDR_ANY))), listenPort);
+      SocketAddress sa(IPAddress(static_cast<in_addr_t>(htonl(INADDR_ANY))),
+                       args->port);
       sock->bindToAddr(sa);
       sock->listen();
-
       listenSock = sock.release();
    }
    catch (SocketException& e)
@@ -102,7 +115,7 @@ bool SuperTcpListenerThread::setupListener()
    }
 
    log.log(Log_NOTICE, std::string("Listening for SuperTCP connections: Port ")
-                       + StringTk::intToStr(listenPort));
+                       + StringTk::intToStr(args->port));
    return true;
 }
 
@@ -146,15 +159,13 @@ void SuperTcpListenerThread::onListenerReadable()
          struct sockaddr_storage peer = {};
          socklen_t peerLen = sizeof(peer);
 
-         Socket* accepted = listenSock->accept(
-            reinterpret_cast<struct sockaddr_storage*>(&peer), &peerLen);
+         Socket* accepted = listenSock->accept(&peer, &peerLen);
          if (!accepted)
             break;
 
          std::unique_ptr<SuperTcpSocket> stSock(static_cast<SuperTcpSocket*>(accepted));
          int fd = stSock->getFD();
 
-         // Register accepted in our mtcp_epoll
          struct mtcp_epoll_event ev = {};
          ev.events      = MTCP_EPOLLIN;
          ev.data.sockid = fd;
@@ -176,7 +187,7 @@ void SuperTcpListenerThread::onListenerReadable()
    }
    catch (SocketException& e)
    {
-      // EAGAIN-like when no more pending — fall through silently.
+      // EAGAIN-equivalent at no-more-pending; fall through.
    }
 }
 
@@ -189,11 +200,9 @@ void SuperTcpListenerThread::onAcceptedReadable(int sockid, ConnState& state)
       char* bufIn = state.recvBuf.data();
       const unsigned bufInLen = state.recvBuf.size();
 
-      // 1. Receive at least the message header.
       ssize_t numReceived =
          state.sock->recvExactT(bufIn, NETMSG_MIN_LENGTH, 0, recvTimeoutMS);
 
-      // 2. Parse expected total length from the header.
       unsigned msgLength =
          NetMessageHeader::extractMsgLengthFromBuf(bufIn, numReceived);
       if (msgLength > bufInLen)
@@ -205,13 +214,11 @@ void SuperTcpListenerThread::onAcceptedReadable(int sockid, ConnState& state)
          return;
       }
 
-      // 3. Receive the rest of the message.
       if (msgLength > static_cast<unsigned>(numReceived))
          state.sock->recvExactT(&bufIn[numReceived],
                                 msgLength - numReceived, 0, recvTimeoutMS);
 
-      // 4. Build NetMessage from raw bytes.
-      auto factory = app->getNetMessageFactory();
+      auto factory = args->app->getNetMessageFactory();
       auto msg = factory->createFromRaw(bufIn, msgLength);
 
       if (msg->getMsgType() == NETMSGTYPE_Invalid)
@@ -223,9 +230,6 @@ void SuperTcpListenerThread::onAcceptedReadable(int sockid, ConnState& state)
          return;
       }
 
-      // 5. Process inline. The message's processIncoming() writes the response
-      //    via state.sock->send(...) using the same thread-local mctx — safe
-      //    because we are still on this listener thread.
       NetMessage::ResponseContext rctx(nullptr, state.sock.get(),
                                        state.sendBuf.data(), state.sendBuf.size(),
                                        nullptr);
@@ -238,9 +242,6 @@ void SuperTcpListenerThread::onAcceptedReadable(int sockid, ConnState& state)
          closeConn(sockid);
          return;
       }
-
-      // 6. Re-arm: mtcp_epoll is level-triggered by default in our config,
-      //    so the next data event will fire automatically. Nothing to do.
    }
    catch (SocketTimeoutException& e)
    {

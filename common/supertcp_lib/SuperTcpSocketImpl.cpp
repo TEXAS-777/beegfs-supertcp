@@ -16,7 +16,14 @@
 #include <pthread.h>
 #include <sched.h>
 #include <sys/socket.h>
+#include <thread>
 
+// Our libmtcp.a is built with ENABLE_UCTX=1; that gates mtcp_thread_create
+// and mtcp_run_app behind the same #ifdef in mtcp_api.h. Define it before
+// inclusion to expose those symbols.
+#ifndef ENABLE_UCTX
+#define ENABLE_UCTX
+#endif
 #include <mtcp_api.h>
 #include <mtcp_epoll.h>
 
@@ -53,10 +60,18 @@ void initRuntimeOnce()
    g_initOk = true;
 }
 
-// Per-thread mtcp context. mtcp_create_context expects the calling thread to
-// already be pinned via mtcp_core_affinitize.
-thread_local bool   t_ctxInited = false;
-thread_local int    t_coreId    = -1;
+// Per-thread mtcp context. UCTX mode (our build) populates g_mctx[lcore]
+// for threads spawned via mtcp_thread_create + driven by mtcp_run_app.
+// The listener lthread sets t_inLthread before any SuperTcpSocket call; for
+// such threads we just need mtcp_create_context once to obtain mctx.
+//
+// NOTE: any other call site (e.g. daemon main thread doing
+// findAllowedSuperTcpInterfaces) is intentionally NOT supported under UCTX —
+// pthread g_mctx slots are never populated, so SuperTcpSocket usage from
+// pthread context would receive NULL mctx. App.cpp skips that path on
+// connUseSuperTCP=true precisely for this reason.
+thread_local bool t_ctxInited = false;
+thread_local bool t_inLthread = false;
 
 void ensureThreadContext()
 {
@@ -64,40 +79,30 @@ void ensureThreadContext()
       return;
 
    if (!g_initOk)
-      throw SocketException("SuperTcpSocket: mtcp_init failed earlier; runtime unavailable");
+      throw SocketException("SuperTcpSocket: mtcp_init failed; runtime unavailable");
 
-   t_coreId = g_coreCursor.fetch_add(1, std::memory_order_relaxed) % g_numCores;
+   if (!t_inLthread)
+      throw SocketException(
+         "SuperTcpSocket: called from a kernel pthread; UCTX mtcp requires "
+         "calls from inside an mtcp lthread (started via mtcp_thread_create). "
+         "BeeGFS exercises SuperTcpSocket only from SuperTcpListenerThread.");
 
-   // mtcp_init binds the calling (main) thread to its master lcore via
-   // rte_eal_init; threads spawned afterwards inherit that mask. Reset to
-   // ALL configured mtcp cores before mtcp_core_affinitize so the listener
-   // thread can actually pick a different core than the master.
-   {
-      cpu_set_t allCores;
-      CPU_ZERO(&allCores);
-      for (int c = 0; c < g_numCores; c++)
-         CPU_SET(c, &allCores);
-      // pthread_setaffinity_np is a no-op for cores already in the mask;
-      // expanding requires the calling user to have permission (no cgroup
-      // restriction), which is the normal case for daemons run via systemd.
-      pthread_setaffinity_np(pthread_self(), sizeof(allCores), &allCores);
-   }
-
-   // mtcp_core_affinitize returns the fscanf conversion count on success
-   // for multi-NUMA systems (a quirk of mtcp's cpu.c — it returns the
-   // last `ret` which gets overwritten by fscanf). Treat only negative
-   // values as failure.
-   if (mtcp_core_affinitize(t_coreId) < 0)
-      throw SocketException("SuperTcpSocket: mtcp_core_affinitize failed for core "
-                            + std::to_string(t_coreId)
-                            + ": errno=" + std::to_string(errno)
-                            + " (" + std::strerror(errno) + ")");
-
-   if (mtcp_create_context(t_coreId) == nullptr)
-      throw SocketException("SuperTcpSocket: mtcp_create_context failed for core "
-                            + std::to_string(t_coreId));
+   // Inside lthread: mtcp_create_context just looks up g_mctx[lcore], which
+   // mtcp_thread_create has already populated. No core_affinitize needed —
+   // the lthread scheduler manages CPU placement.
+   if (mtcp_create_context(0) == nullptr)
+      throw SocketException("SuperTcpSocket: mtcp_create_context returned NULL");
 
    t_ctxInited = true;
+}
+
+// Marks the current thread as an mtcp lthread for ensureThreadContext.
+// Called by SuperTcpListenerThread::lthreadEntry before any SuperTcpSocket
+// usage. Symbol exported so the listener can find it across TUs in this .so.
+extern "C" void supertcp_mark_lthread()
+{
+   t_inLthread = true;
+   t_ctxInited = false;  // force re-init in this thread
 }
 
 [[noreturn]] void throwSysErr(const char* what)
@@ -186,22 +191,56 @@ SuperTcpSocket* new_supertcp_socket()
    return new SuperTcpSocketImpl();
 }
 
+// Listener handle that owns the lthread args + the pthread that drives
+// mtcp_run_app. Returned to ConnAcceptor; passed back to
+// listener_stop_and_join_cb on shutdown.
+struct ListenerHandle
+{
+   SuperTcpListenerThread::Args args;
+   std::thread                  runner;  // pthread that calls mtcp_run_app
+};
+
 void* listener_start_cb(void* app_opaque, uint16_t port)
 {
    AbstractApp* app = static_cast<AbstractApp*>(app_opaque);
-   auto* t = new SuperTcpListenerThread(app, port);
-   t->start();
-   return t;
+
+   // Make sure mtcp_init has run.
+   std::call_once(g_initFlag, initRuntimeOnce);
+   if (!g_initOk)
+      return nullptr;
+
+   auto* h = new ListenerHandle();
+   h->args.app  = app;
+   h->args.port = port;
+
+   // Register the listener as an mtcp lthread on lcore 0. mtcp populates
+   // g_mctx[0] for it; mtcp_create_context inside the lthread returns it.
+   if (mtcp_thread_create(
+         (void*)&SuperTcpListenerThread::lthreadEntry,
+         (void*)&h->args,
+         0) < 0)
+   {
+      delete h;
+      return nullptr;
+   }
+
+   // Spawn a pthread to drive mtcp_run_app. mtcp_run_app blocks until all
+   // registered lthreads exit; we set Args::shouldStop on shutdown to make
+   // the listener lthread return, which causes mtcp_run_app to return.
+   h->runner = std::thread([]() { mtcp_run_app(); });
+
+   return h;
 }
 
 void listener_stop_and_join_cb(void* handle)
 {
    if (!handle)
       return;
-   auto* t = static_cast<SuperTcpListenerThread*>(handle);
-   t->selfTerminate();
-   t->join();
-   delete t;
+   auto* h = static_cast<ListenerHandle*>(handle);
+   h->args.shouldStop = true;
+   if (h->runner.joinable())
+      h->runner.join();
+   delete h;
 }
 
 } // namespace

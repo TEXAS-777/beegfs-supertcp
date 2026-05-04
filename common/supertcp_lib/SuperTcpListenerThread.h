@@ -1,62 +1,77 @@
 #pragma once
 
-#include <common/app/AbstractApp.h>
+#include <atomic>
+#include <memory>
+#include <unordered_map>
+#include <vector>
+
 #include <common/app/log/LogContext.h>
 #include <common/net/sock/SuperTcpSocket.h>
-#include <common/threading/PThread.h>
 
-#include <unordered_map>
+
+class AbstractApp;
+
 
 /**
- * Single-threaded SuperTCP listener + data-path handler.
+ * Single-mtcp-lthread listener that does accept + epoll + recv +
+ * NetMessageFactory dispatch all inline.
  *
- * Why a dedicated thread: mTCP's mctx_t is thread-local and per-CPU. A socket
- * created on one thread cannot be safely used on another. BeeGFS's normal
- * Worker pool would hand a socket between accept-thread → poll-thread →
- * worker-thread, which breaks mTCP's invariants. So we run accept + epoll +
- * read + message-dispatch all on this single thread, mirroring the
- * apps/example/epserver.c pattern.
+ * Why an mtcp lthread (not a kernel pthread): our libmtcp.a is built with
+ * ENABLE_UCTX=1 (Intel lthread mode). In that mode, mctx_t is reachable
+ * only from threads spawned via mtcp_thread_create + driven by
+ * mtcp_run_app. A plain pthread cannot get a usable mctx_t (its g_mctx
+ * slot is never populated), so all SuperTcpSocket operations from outside
+ * the lthread would fail.
  *
  * Lifecycle:
- *   - run(): mtcp_core_affinitize + mtcp_create_context, then bind + listen
- *     SuperTcpSocket on listenPort, then loop on mtcp_epoll_wait.
- *   - Listener event → mtcp_accept, register accepted in mtcp_epoll.
- *   - Accepted-socket event → recvExact(header) + recvExact(body) → invoke
- *     NetMessageFactory + msg->processIncoming(rctx) inline.
- *
- * Phase 4 trade-off: single-thread throughput ceiling. For multi-core
- * scaling, would need either (a) one listener thread per core with
- * mtcp_init_rss flow distribution, or (b) cross-thread socket handoff in
- * mtcp itself. Left as Phase 5+.
+ *   - Plugin's listener_start_cb allocates SuperTcpListenerThread::Args,
+ *     calls mtcp_thread_create(SuperTcpListenerThread::lthreadEntry,
+ *     args, lcore), then spawns a pthread that calls mtcp_run_app()
+ *     (which blocks until all lthreads exit).
+ *   - lthreadEntry runs on the mtcp scheduler with a valid mctx via
+ *     mtcp_create_context. It creates the SuperTcpSocket listener and
+ *     loops on mtcp_epoll_wait.
+ *   - listener_stop_and_join_cb flips Args::shouldStop; the lthread
+ *     observes it on the next epoll_wait, exits; mtcp_run_app returns;
+ *     the runner pthread is joined.
  */
-class SuperTcpListenerThread : public PThread
+class SuperTcpListenerThread
 {
    public:
-      SuperTcpListenerThread(AbstractApp* app, unsigned short listenPort);
-      virtual ~SuperTcpListenerThread();
-
-      virtual void run() override;
-
-   private:
-      AbstractApp*    app;
-      LogContext      log;
-      unsigned short  listenPort;
-
-      SuperTcpSocket* listenSock = nullptr;
-      int             mtcpEpollFD = -1;
-
-      // Per-connection receive buffers, keyed by mtcp socket id. We allocate
-      // lazily on first data event for a given accepted socket.
-      struct ConnState {
+      struct ConnState
+      {
          std::unique_ptr<SuperTcpSocket> sock;
          std::vector<char> recvBuf;
          std::vector<char> sendBuf;
       };
+
+      struct Args
+      {
+         AbstractApp*       app;
+         uint16_t           port;
+         std::atomic<bool>  shouldStop{false};
+         // Set by lthreadEntry after setupListener succeeds; read by
+         // listener_start_cb to gate logging.
+         std::atomic<bool>  listening{false};
+      };
+
+      // mtcp lthread entry point. Signature is void(void*) to match
+      // mtcp_app_func_t. Owns its instance for the duration of the run.
+      static void lthreadEntry(void* argsOpaque);
+
+   private:
+      explicit SuperTcpListenerThread(Args* args);
+      ~SuperTcpListenerThread();
+
+      Args*           args;
+      LogContext      log;
+
+      SuperTcpSocket* listenSock = nullptr;
+      int             mtcpEpollFD = -1;
       std::unordered_map<int, ConnState> conns;
 
-      void runOnce();
-      void initThreadContext();
       bool setupListener();
+      void runOnce();
       void onListenerReadable();
       void onAcceptedReadable(int sockid, ConnState& state);
       void closeConn(int sockid);
