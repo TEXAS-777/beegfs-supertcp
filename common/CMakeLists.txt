@@ -606,21 +606,33 @@ install(
 )
 
 # --- SuperTCP transport plugin (optional) ---
-# Build libbeegfs_supertcp.so only when explicitly enabled. The plugin links
-# against mTCP / DPDK; until those paths are wired up, the scaffolding stubs
-# build cleanly with -DBEEGFS_USE_SUPERTCP=ON without any external deps.
+# Build libbeegfs_supertcp.so when -DBEEGFS_USE_SUPERTCP=ON. Requires:
+#   -DMTCP_DIR=<path-to-SuperTCP-repo>   (must contain include/ and lib/libmtcp.a)
+#   libdpdk via pkg-config
+#   libnuma, libgmp, libpcap             (system packages)
 if(BEEGFS_USE_SUPERTCP)
+	if(NOT MTCP_DIR)
+		message(FATAL_ERROR "BEEGFS_USE_SUPERTCP=ON requires -DMTCP_DIR=/path/to/SuperTCP-repo")
+	endif()
+
+	pkg_check_modules(DPDK REQUIRED IMPORTED_TARGET libdpdk)
+
 	add_library(
 		beegfs_supertcp SHARED
 		./supertcp_lib/SuperTcpSocketImpl.h
 		./supertcp_lib/SuperTcpSocketImpl.cpp
 	)
 
-	target_include_directories(beegfs_supertcp PRIVATE ./supertcp_lib)
+	target_include_directories(beegfs_supertcp PRIVATE
+		./supertcp_lib
+		${MTCP_DIR}/include
+	)
 
-	# TODO: link against SuperTCP / DPDK once those calls are wired into
-	# SuperTcpSocketImpl.cpp. For now the plugin has no extra deps.
-	# Expected: target_link_libraries(beegfs_supertcp mtcp dpdk ...)
+	target_link_libraries(beegfs_supertcp
+		${MTCP_DIR}/lib/libmtcp.a
+		PkgConfig::DPDK
+		numa gmp pcap pthread dl
+	)
 
 	install(
 		TARGETS beegfs_supertcp

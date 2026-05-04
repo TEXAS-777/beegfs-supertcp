@@ -14,13 +14,26 @@ $(call build-shared-library,\
    ../source ../ib_lib)
 
 # SuperTCP transport plugin: opt-in via BEEGFS_USE_SUPERTCP=1.
-# During scaffolding the plugin has no external deps; once SuperTcpSocketImpl
-# wires in mtcp / DPDK calls, add them to the deps list.
+# Requires:
+#   MTCP_DIR=<path-to-SuperTCP-repo>   (must contain include/ and lib/libmtcp.a)
+#   libdpdk available via pkg-config   (DPDK installed system-wide)
+#   libnuma, libgmp, libpcap           (system packages)
 ifeq ($(BEEGFS_USE_SUPERTCP),1)
+ifneq ($(strip $(MAKECMDGOALS)),clean)
+ifndef MTCP_DIR
+$(error BEEGFS_USE_SUPERTCP=1 requires MTCP_DIR=/path/to/SuperTCP-repo (must contain include/ and lib/libmtcp.a))
+endif
+endif
+
+$(call define-dep-lib, supertcp,\
+   -I$(MTCP_DIR)/include,\
+   $(MTCP_DIR)/lib/libmtcp.a,\
+   -L$(MTCP_DIR)/lib -lmtcp $(shell pkg-config --libs libdpdk 2>/dev/null) -lnuma -lgmp -lpcap -lpthread -ldl)
+
 $(call build-shared-library,\
    beegfs_supertcp,\
    $(shell find ../supertcp_lib -iname '*.cpp'),\
-   ,\
+   supertcp,\
    ../source ../supertcp_lib)
 endif
 
