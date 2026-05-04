@@ -83,7 +83,11 @@ void ensureThreadContext()
       pthread_setaffinity_np(pthread_self(), sizeof(allCores), &allCores);
    }
 
-   if (mtcp_core_affinitize(t_coreId) != 0)
+   // mtcp_core_affinitize returns the fscanf conversion count on success
+   // for multi-NUMA systems (a quirk of mtcp's cpu.c — it returns the
+   // last `ret` which gets overwritten by fscanf). Treat only negative
+   // values as failure.
+   if (mtcp_core_affinitize(t_coreId) < 0)
       throw SocketException("SuperTcpSocket: mtcp_core_affinitize failed for core "
                             + std::to_string(t_coreId)
                             + ": errno=" + std::to_string(errno)
